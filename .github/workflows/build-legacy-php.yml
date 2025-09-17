@@ -18,7 +18,7 @@ jobs:
         php_minor: ["7.4", "8.0"]
     runs-on: ubuntu-latest
     env:
-      EXTS_ALPINE: "apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,ftp,gd,gettext,gmp,iconv,intl,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pgsql,phar,posix,protobuf,readline,redis,session,shmop,simplexml,soap,sockets,sodium,sqlite3,swoole,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
+      EXTS: "apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,ftp,gd,gettext,gmp,iconv,intl,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pgsql,phar,posix,protobuf,readline,redis,session,shmop,simplexml,soap,sockets,sodium,sqlite3,swoole,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${{ matrix.php_minor }}" == "7.4" ]]; then
-            IFS=',' read -ra arr <<< "$EXTS_ALPINE"
+            IFS=',' read -ra arr <<< "$EXTS"
             OUT=""
             for e in "${arr[@]}"; do
               # Exclude extensions incompatible or failing on PHP 7.4 static builds
@@ -67,7 +67,7 @@ jobs:
             done
             echo "EXTS=$OUT" >> "$GITHUB_ENV"
           else
-            echo "EXTS=$EXTS_ALPINE" >> "$GITHUB_ENV"
+            echo "EXTS=$EXTS" >> "$GITHUB_ENV"
           fi
 
       - name: Force C++17 for PHP 7.4 build (intl/ICU)
@@ -100,17 +100,13 @@ jobs:
           set -euo pipefail
           BIN=spc-src/buildroot/bin/php
           test -f "$BIN"
-          FULL_VER="$($BIN -r 'echo PHP_VERSION;')"
           mkdir -p dist
           OS=linux
           ARCH=x86_64
-          LIBC=gnu
-          NAME="php-${FULL_VER}-${OS}-${LIBC}-${ARCH}"
+          NAME="php-${FULL_VER}-${OS}-${ARCH}"
           cp "$BIN" "dist/${NAME}"
           chmod +x "dist/${NAME}"
           sha256sum "dist/${NAME}" | awk '{print $1}' > "dist/${NAME}.sha256"
-            printf "%s\n" "${EXTS}" > "dist/EXTENSIONS-${LIBC}.txt"
-          printf "%s\n" "$FULL_VER" > "dist/FULL_VERSION.txt"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -166,7 +162,10 @@ jobs:
             echo "- Official changelog: ${CHANGELOG_URL}";
             if [ -n "$EXTS_COMBINED" ]; then
               echo "";
-              echo "Compiled with static-php-cli (https://github.com/crazywhalecc/static-php-cli) including the extensions: ${EXTS_COMBINED}";
+              echo "Compiled with [static-php-cli](https://github.com/crazywhalecc/static-php-cli) including the extensions:";
+              echo "```";
+              echo "${EXTS_COMBINED}";
+              echo "```";
             fi
           } > release/RELEASE_NOTES.md
 
@@ -174,8 +173,8 @@ jobs:
         if: steps.have_assets.outputs.found == 'true'
         uses: ncipollo/release-action@v1
         with:
-          tag: php-${{ matrix.php_minor }}
-          name: PHP ${{ matrix.php_minor }}
+          tag: v${{ matrix.php_minor }}
+          name: v${{ matrix.php_minor }}
           bodyFile: release/RELEASE_NOTES.md
           allowUpdates: true
           replacesArtifacts: true

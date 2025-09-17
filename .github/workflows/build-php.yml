@@ -89,12 +89,10 @@ jobs:
           mkdir -p dist
           OS=linux
           ARCH=x86_64
-          LIBC=${{ matrix.toolchain }}
-          NAME="php-${FULL_VER}-${OS}-${LIBC}-${ARCH}"
+          NAME="php-${FULL_VER}-${OS}-${ARCH}"
           cp "$BIN" "dist/${NAME}"
           chmod +x "dist/${NAME}"
           sha256sum "dist/${NAME}" | awk '{print $1}' > "dist/${NAME}.sha256"
-          printf "%s\n" "${EXTS}" > "dist/EXTENSIONS-${LIBC}.txt"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -153,7 +151,10 @@ jobs:
             echo "- Official changelog: ${CHANGELOG_URL}";
             if [ -n "$EXTS_COMBINED" ]; then
               echo "";
-              echo "Compiled with static-php-cli (https://github.com/crazywhalecc/static-php-cli) including the extensions: ${EXTS_COMBINED}";
+              echo "Compiled with [static-php-cli](https://github.com/crazywhalecc/static-php-cli) including the extensions:";
+              echo "```";
+              echo "${EXTS_COMBINED}";
+              echo "```";
             fi
           } > release/RELEASE_NOTES.md
 
@@ -161,8 +162,8 @@ jobs:
         if: steps.have_assets.outputs.found == 'true'
         uses: ncipollo/release-action@v1
         with:
-          tag: php-${{ matrix.php_minor }}
-          name: PHP ${{ matrix.php_minor }}
+          tag: v${{ matrix.php_minor }}
+          name: v${{ matrix.php_minor }}
           bodyFile: release/RELEASE_NOTES.md
           allowUpdates: true
           replacesArtifacts: true
