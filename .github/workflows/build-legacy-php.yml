@@ -1,0 +1,183 @@
+name: Build legacy PHP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: static-php-legacy
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        php_minor: ["7.4", "8.0"]
+    runs-on: ubuntu-latest
+    env:
+      EXTS_ALPINE: "apcu,bcmath,bz2,calendar,ctype,curl,dba,dom,exif,fileinfo,filter,ftp,gd,gettext,gmp,iconv,intl,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pgsql,phar,posix,protobuf,readline,redis,session,shmop,simplexml,soap,sockets,sodium,sqlite3,swoole,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout static-php-cli v2.3.6
+        uses: actions/checkout@v4
+        with:
+          repository: crazywhalecc/static-php-cli
+          ref: 2.3.6
+          path: spc-src
+          fetch-depth: 1
+
+      - name: Setup SPC runtime (PHP & Composer)
+        working-directory: spc-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x bin/setup-runtime || true
+          bin/setup-runtime
+          bin/composer install --no-interaction --no-progress --no-dev --prefer-dist
+          chmod +x bin/spc
+
+      - name: Cache SPC downloads
+        uses: actions/cache@v4
+        with:
+          path: spc-src/downloads
+          key: spc-downloads-legacy-${{ matrix.php_minor }}-v1
+          restore-keys: |
+            spc-downloads-legacy-
+
+      - name: Select extensions for minor
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.php_minor }}" == "7.4" ]]; then
+            IFS=',' read -ra arr <<< "$EXTS_ALPINE"
+            OUT=""
+            for e in "${arr[@]}"; do
+              # Exclude extensions incompatible or failing on PHP 7.4 static builds
+              # - opcache: problematic in this static 7.4 path
+              # - protobuf: requires PHP >= 8.0
+              if [[ "$e" != "opcache" && "$e" != "protobuf" ]]; then
+                if [[ -z "$OUT" ]]; then OUT="$e"; else OUT="$OUT,$e"; fi
+              fi
+            done
+            echo "EXTS=$OUT" >> "$GITHUB_ENV"
+          else
+            echo "EXTS=$EXTS_ALPINE" >> "$GITHUB_ENV"
+          fi
+
+      - name: Force C++17 for PHP 7.4 build (intl/ICU)
+        if: matrix.php_minor == '7.4'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ensure -std=c++17 appears LAST in C++ compile commands
+          # by appending via EXTRA_CXXFLAGS through SPC_CMD_PREFIX_PHP_MAKE.
+          echo "SPC_CMD_PREFIX_PHP_MAKE=env EXTRA_CXXFLAGS='-std=gnu++17 -std=c++17'" >> "$GITHUB_ENV"
+
+      - name: Download sources (${{ matrix.php_minor }})
+        working-directory: spc-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./bin/spc doctor --auto-fix --debug || true
+          ./bin/spc download --for-extensions="${EXTS}" --with-php="${{ matrix.php_minor }}" --prefer-pre-built --debug
+
+      - name: Build CLI (${{ matrix.php_minor }})
+        working-directory: spc-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./bin/spc build "${EXTS}" --build-cli --debug
+
+      - name: Package artifacts (${{ matrix.php_minor }})
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=spc-src/buildroot/bin/php
+          test -f "$BIN"
+          FULL_VER="$($BIN -r 'echo PHP_VERSION;')"
+          mkdir -p dist
+          OS=linux
+          ARCH=x86_64
+          LIBC=gnu
+          NAME="php-${FULL_VER}-${OS}-${LIBC}-${ARCH}"
+          cp "$BIN" "dist/${NAME}"
+          chmod +x "dist/${NAME}"
+          sha256sum "dist/${NAME}" | awk '{print $1}' > "dist/${NAME}.sha256"
+            printf "%s\n" "${EXTS}" > "dist/EXTENSIONS-${LIBC}.txt"
+          printf "%s\n" "$FULL_VER" > "dist/FULL_VERSION.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static-php-legacy-${{ matrix.php_minor }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        php_minor: ["7.4", "8.0"]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: static-php-legacy-${{ matrix.php_minor }}
+          path: release
+
+      - name: Check for artifacts for this minor
+        id: have_assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ls release/php-* 1>/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release notes (PHP changelog link)
+        if: steps.have_assets.outputs.found == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          FIRST_ASSET=$(ls -1 release/php-* | head -n1)
+          FULL_VER=$(basename "$FIRST_ASSET" | sed -E 's/^php-([0-9]+\.[0-9]+\.[0-9]+)-.*/\1/')
+          MAJOR=$(echo "$FULL_VER" | cut -d. -f1)
+          CHANGELOG_URL="https://www.php.net/ChangeLog-${MAJOR}.php#${FULL_VER}"
+          EXTS_COMBINED=""
+          if ls release/EXTENSIONS-*.txt >/dev/null 2>&1; then
+            EXTS_COMBINED=$(cat release/EXTENSIONS-*.txt | tr ',' '\n' | sed 's/^\s*//;s/\s*$//' | sed '/^$/d' | sort -u | paste -sd, -)
+          fi
+          {
+            echo "PHP ${FULL_VER}";
+            echo "";
+            echo "- Official changelog: ${CHANGELOG_URL}";
+            if [ -n "$EXTS_COMBINED" ]; then
+              echo "";
+              echo "Compiled with static-php-cli (https://github.com/crazywhalecc/static-php-cli) including the extensions: ${EXTS_COMBINED}";
+            fi
+          } > release/RELEASE_NOTES.md
+
+      - name: Publish GitHub Release
+        if: steps.have_assets.outputs.found == 'true'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: php-${{ matrix.php_minor }}
+          name: PHP ${{ matrix.php_minor }}
+          bodyFile: release/RELEASE_NOTES.md
+          allowUpdates: true
+          replacesArtifacts: true
+          artifacts: release/*
+          token: ${{ github.token }}
